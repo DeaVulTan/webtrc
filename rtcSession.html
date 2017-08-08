@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Jingle/MUC-powered WebRTC VideoChat Sample</title>
+    <script src='http://ajax.googleapis.com/ajax/libs/jquery/1.8.3/jquery.min.js'></script><!-- jquery -->
+    <script src='strophe.min.js'></script>
+    <script src='strophe.disco.js'></script><!-- strophe disco support -->
+    <script src='strophe.jingle.js' charset='utf-8'></script><!-- strophe jingle connection plugin -->
+    <script src='strophe.jingle.session.js' charset='utf-8'></script><!-- strophe jingle connection plugin -->
+    <script src='strophe.jingle.sdp.js' charset='utf-8'></script><!-- sdp library -->
+    <script src='strophe.jingle.adapter.js' charset='utf-8'></script><!-- getusermedia cross browser compat layer -->
+    <script src='hark.bundle.js' charset='utf-8'></script>  <!-- https://github.com/latentflip/hark --> 
+    <script src='stats.js' charset='utf-8'></script>
+    <script src='rtcSession.js' charset='utf-8'></script>
+ <style type='text/css'>
+
+body {background-color:navy; font-family: arial; margin:0px; padding:0px}
+
+#minivideocontainer {width:160px;height:120px;}
+.localViewport {width:160px;height:120px;}
+.rmtViewport {width:100%;height:100%;}
+#ownvolume {width:0px;height:2px;background-color:#00ee00;}
+.status {color:white;background-color:navy;line-height:28px;font-size:14px;text-align:center;}
+#explain {width:160px;color:white;background-color:navy;font-weight:bold;font-size:14px;text-align:center}
+#explain a:link {color:white;}
+#explain a:visited {color:white;}
+#explain a img{width:160px;background-color:#cef4fd}
+#login {width:160px;}
+.textattrs {color:white;background-color:navy;font-family: Arial; font-weight:bold;line-height:28px;font-size:14px;}
+.rowtd {vertical-align:top; height:1%}
+.videotd{margin:0px; padding:0px}
+.vid{padding:0px}
+.remotevideo{height:100%;width:100%}
+.video_novideo{display:table; font-family: Arial; font-size: 24pt; color: red; text-align: center;}
+.video_novideo span{display:table-cell; vertical-align: middle;}
+.nick{font-family: Arial; color: lawngreen; text-align: center;}
+.nicktd{text-align:center}
+.rmtVideoConainer tr, .rmtVideoConainer td {margin: 0px; padding: 0px;}
+.mute {color:white;background-color:navy;font-family: Arial; line-height:28px;font-size:11px;}
+.messages
+{
+    color:white;
+    background-color:navy;
+    line-height:28px;
+    font-size:14px;
+    text-align:center;
+}
+.msgItem
+{
+    width: 300px;
+    height: 100px;
+    border: 1px solid;
+    border-color: green;
+}
+.msgDlg {}
+
+ </style>
+ </head>
+ <body>
+ <table><tr>
+  <td width=20%>
+    <table id='dlgContainer' class='messages' style="vertical-align:top"></table>
+    <pre id='commonStatsContainer' style='color:white;background-color:navy;'></pre>
+    <pre id='statsContainer' style='color:white;background-color:navy;'></pre>
+  </td>
+  <td width=75% id='remoteVidCtr' style="align: center; height:240px; padding:10px; vertical-align:top">
+  </td>
+  <td style='vertical-align:top'>
+   <table>
+    <tr><td>
+      <table>
+        <tr><td>
+          <div id='localVidCtr' width=160px height=120px></video></div>
+        </td></tr>
+        <tr><td>
+          <div id='ownvolume'></div>
+        </td></tr>
+      </table>
+    </td></tr>
+   <tr><td class='rowtd'>
+      <input type='submit' id='call' value='connecting...' onclick='onCallbtnClick();' disabled>
+   </td></tr>
+   <tr><td class='rowtd'>
+      <label class='textattrs' style="text-align:center">Chat:</label>
+      <textarea readonly=true style="width: 150px; height:200px; font-size:8pt;font-family: Arial;" id='chat'> </textarea>
+      <label class='textattrs' style="text-align:center">Send Msg:</label>
+      <textarea style="width: 150px; height:30px" id='typemsg' onkeypress='return handleTypedChar(event);'> </textarea>
+      <label class='mute'>Mute&nbsp;Audio</label><input type=checkbox id = 'chkMuteAudio' onclick="rtc.muteUnmute(this.checked, {audio:true});" />
+      <label class='mute'>Mute&nbsp;Video</label><input type=checkbox id = 'chkMuteVideo' onclick="rtc.muteUnmute(this.checked, {video:true});" />
+      <br/>
+      <label class='textattrs'>Log&nbsp;XMPP</label><input type=checkbox id = 'chkLogXmpp' onclick="rtc.RAWLOGGING=this.checked;" />
+   </td></tr>
+  </tr>
+  <tr><td colspan=3 height=1%>
+     <div id='status' class='msg' height=20px></div>
+  </td></tr>
+ </table>
+ <script type='text/javascript' charset='utf-8'>
+
+var params = null;
+var callBtn = document.getElementById("call");
+var typemsg = document.getElementById("typemsg");
+var chat = document.getElementById("chat");
+var connection = null;
+var rtc = null;
+var levelDiv = document.getElementById("ownvolume");
+function handleTypedChar(event)
+{
+    if (event.keyCode != 13)
+        return;
+    document.getElementById('chat').value += ('me:\n'+typemsg.value+'\n');
+    var msg = $msg({from: params.jid, to: params.peer, type:'chat'}).c('body').t(typemsg.value);
+    connection.send(msg);
+    typemsg.value = '';
+    event.preventDefault();
+}
+function onMessage(msg)
+{
+    var type = $(msg).attr('type');
+    if (type && (type !== 'group') && (type !== 'chat')) //filter call setup messages
+        return true;
+    var group = (type === 'groupchat');
+    var from = group?Strophe.getResourceFromJid($(msg).attr('from')):Strophe.getBareJidFromJid($(msg).attr('from'));
+    var body = msg.getElementsByTagName('body');
+    if (body.length < 1)
+        return true;
+    var txt = RtcSession.xmlUnescape(body[0].textContent);
+    txt = from+(group?'(group)':'')+':\n'+txt.replace(/^[\n\r]+/mg, '')+'\n';
+    var chat = document.getElementById('chat');
+    chat.value = chat.value+txt;
+    chat.scrollTop = chat.scrollHeight;
+    return true;
+}
+
+function getMutedChks()
+{
+    return {
+        audio:!document.getElementById('chkMuteAudio').checked,
+        video:!document.getElementById('chkMuteVideo').checked
+    }
+}
+
+function onCallbtnClick()
+{
+    if (callBtn.value == 'call' || callBtn.value == 'Get camera and call') {
+        callReq = rtc.startMediaCall(params.peer, getMutedChks());
+        callBtn.value = 'calling...';
+    }
+    else if (callBtn.value == 'calling...') {
+        if (callReq.cancel())
+            callBtn.value = 'call';
+          else
+            alert('BUG: Call already answered but button caption not updated');
+    }
+    else
+        rtc.hangup();
+
+    chat.value = '';
+    return false;
+}
+
+
+$(document).ready(function() 
+{
+    params = parseParams(window.location.search);
+    console.log(params);
+    if (!params.jid)
+        throw new Error("No own JID specified in URL");
+    if (!params.peer)
+        throw new Error("No peer JID specified in URL");
+
+    params.peer += '@j100.server.lu';
+    params.jid += '@j100.server.lu/test_'+Math.random().toString(36).substr(2, 8);
+    
+    if (params.vid)
+    {
+        var enabled = (params.vid !== '0');
+        document.getElementById('chkSendVideo').checked = enabled;
+    }
+    if (params.logxml)
+    {
+        document.getElementById('chkLogXmpp').checked = true;
+        RtcSession.RAWLOGGING = true;
+    }
+    if (localStorage.megaMediaInputFlags === undefined)
+        askForMediaDeviceUsage(function(err) {if (err) alert('Error detecting input devices'); else start();});
+      else
+        start();
+});
+
+function start() {
+   Strophe.SASLSHA1.test = function() { return false; };
+   connection = new Strophe.Connection(params.ws?'ws://j100.server.lu:5289/':'http://j100.server.lu:5280/http-bind');
+//debug SASL crypto
+//connection.authcid = 'alex';
+//connection.pass = 'testpass';
+//Strophe.SASLSHA1.prototype.onChallenge(connection, null, "d41d8cd98f00b204e9800998ecf8427e");
+//Strophe.SASLSHA1.prototype.onChallenge(connection,
+ //"r=d41d8cd98f00b204e9800998ecf8427eeQJ7/NXprIKeetuv5bUd3Q==,s=JVr1WdQI+sRCoX3GlNEG2A==,i=4096"
+// );
+//return;
+
+//===
+
+   rtc = connection.rtc = new RtcSession(connection, 
+   {
+        dummyCryptoFunctions: true,
+//     iceServers:[{url: 'stun:stun.l.google.com:19302'}]
+        iceServers: [{
+            url: 'turn:j100.server.lu:3478?transport=udp',
+            username: "alex",
+            credential: 'alexsecret'
+        },
+        {
+            url: 'turn:j100.server.lu:3478?transport=tcp',
+            username: "alex",
+            credential: 'alexsecret'
+        }]
+    });
+   if (params.logevents)
+        rtc.logEvent = function(name, obj) {console.warn('event:', name);}
+
+   $(rtc).on('call-incoming-request', function(event, obj) {
+        //var ans = confirm('Incoming call from '+obj.peer);
+        console.log('call incoming');
+        var ansParam = params['answer'];
+        if (ansParam === undefined) {
+            ansDlg = createAnswerDialog('Incoming call from '+obj.peer,
+             dlgIdFromJid(obj.peer),
+             [
+              {btn:"Answer", id:"answerBtn", cb:
+               function() { //yes callback
+                if (obj.answer(true, {mediaOptions: getMutedChks()})) {
+                    callBtn.value = 'hangup';
+                    closeAnsDialog(ansDlg);
+                } else
+                    closeAnsDlgAndDisplayMsg(ansDlg, 'Could not answer call');
+               }
+              },
+              {btn:"Decline", id:"declineBtn", cb:
+               function() { //no callback
+                if (obj.answer(false, {reason:'busy'}))
+                    closeAnsDialog(ansDlg);
+                  else
+                    closeAnsDlgAndDisplayMsg(ansDlg, 'Could not decline call');
+               }
+              }
+             ]
+            );
+        } else {
+            ans = parseInt(ansParam);
+            if (ans)
+                obj.answer(true, {mediaOptions: getMutedChks()});
+            else
+                obj.answer(false, {reason:'busy'});
+        }
+    });
+   $(rtc).on('call-answered', function(event, obj) {
+        callBtn.value = 'hangup';
+//        console.warn('We answered an incoming  call');
+   });
+ 
+   $(rtc).on('call-declined', function(event, obj) {
+        onHangup();
+        var msg = 'Call to "'+obj.peer+'" was not accepted. Reason: '+obj.reason;
+        if (obj.text)
+            msg+='\n'+obj.text;
+         alert(msg);
+   });
+   
+   $(rtc).on('call-answer-timeout', function(event, obj) {
+        callBtn.value = 'call';
+        alert('Remote peer "'+obj.peer+'" does not answer call');
+   });
+   
+   $(rtc).on('call-canceled', function(event, obj) {
+        var e = obj.info.event;
+        var dlg = $(document.getElementById(dlgIdFromJid(obj.from)));
+        if (e === 'handled-elsewhere')
+            closeAnsDlgAndDisplayMsg(dlg, 'Call from '+obj.from+' '+(obj.info.accepted?'accepted':'declined')+' elsewhere (by '+obj.info.by+')');
+          else if (e === 'timeout')
+            closeAnsDlgAndDisplayMsg(dlg, 'Call request from '+obj.from+' timed out');
+          else if (e === 'canceled')
+            closeAnsDlgAndDisplayMsg(dlg, 'Call request from '+obj.from+' was canceled');
+          else
+            closeAnsDlgAndDisplayMsg(dlg, 'Call request from '+obj.from+' was canceled for an unknown reason'); 
+          callBtn.value = 'call';
+   });
+   
+   $(rtc).on('media-recv', function(event, obj) {
+        $('#remoteVidCtr').append(obj.player);
+        obj.stats = {
+            scanPeriod: 1, maxSamplePeriod: 5,
+            onSample: function(stats, type) {
+                if (type == 1)
+                    document.getElementById('statsContainer').innerHTML=RTC.Stats.statItemToString(stats);
+                 else if (type == 0)
+                    document.getElementById('commonStatsContainer').innerHTML=RTC.Stats.statItemToString(stats);
+            }
+        };
+   });
+   
+   $(rtc).on('local-stream-obtained', function(event, obj) {
+        $('#localVidCtr').append(obj.player);
+   });
+
+   $(rtc).on('local-player-remove', function(event, obj) {
+        $(obj.player).remove();
+   });
+   
+   $(rtc).on('remote-player-remove', function(event, obj) {
+        $(obj.id).remove();
+   });
+   
+   $(rtc).on('local-media-fail', function(event, obj) {
+       onHangup();
+       alert("Error accessing local camera/mic");
+   });
+
+   $(rtc).on('call-init', function(event, obj) {
+        callBtn.value = 'hangup';
+   });
+   
+   $(rtc).on('call-ended', function(event, obj) {
+        onHangup();
+        jQuery.ajax('http://j100.server.lu:1378/stats',
+        {
+            type: 'POST',
+            data: JSON.stringify(obj.stats||obj.basicStats)
+        });
+        if (obj.reason === 'initiate-timeout')
+            alert('Timed out waiting for caller to initiate session'); 
+    });
+    
+    $(rtc).on('muted', function(event, obj) {
+        chat.value+='\nMUTED:'+JSON.stringify(obj.info)+'\n';
+    });
+    
+    $(rtc).on('unmuted', function(event, obj) {
+        chat.value+='\nUNMUTED:'+JSON.stringify(obj.info)+'\n';
+    });
+
+    //rtc.volMonAttachCallback(function(level){levelDiv.style.width=level+'%'});
+    connection.connect(params.jid, 'testpass', 
+      function(status) {
+        if (status == Strophe.Status.CONNECTED) {
+            callBtn.value = 'Get camera and call';
+            callBtn.disabled = false;
+            connection.addHandler(onMessage, null, 'message', null, null, null, {matchBare: true});
+            var pres = $pres().c('show').t('dnd');
+            connection.send(pres);
+        }
+    });
+}
+
+function onHangup() {
+    callBtn.value = 'call';
+}
+
+function parseParams(query) {
+    if (query.length < 1)
+        return {};
+    if (query[0] == '?')
+        query = query.substr(1);
+    var pairs = query.split('&');
+    var result = {};
+    pairs.forEach(function(pair) {
+        var pos = pair.indexOf('=');
+        if (pos < 0)
+        throw new Error("Parameter pair '"+pair+"' missing '=' sign");
+        result[pair.substr(0, pos).toLowerCase()] = pair.substr(pos+1);
+    });
+    return result;
+}
+
+var dlgid = 0;
+
+function createAnswerDialog(msg, id, options) {
+    var existing = $(document.getElementById(id));
+    if (existing.length)
+        existing.remove();
+
+    var b0id = id+'_'+options[0].id;
+    var b1id = id+'_'+options[1].id;
+    
+    var html =
+    "<tr id='"+id+"'><td><table class='msgItem msgDlg'><tr><td colspan=2>"+msg+"</td></tr>"+
+    "<tr><td><input type=button value='"+options[0].btn+"' id='"+b0id+
+    "'/></td><td><input type=button value='"+options[1].btn+"' id='"+b1id+"'/></td></tr></td></tr>";
+    $('#dlgContainer').append(html);
+    var ansDlg = $('#'+id);
+    document.getElementById(b0id).addEventListener('click', options[0].cb);
+    document.getElementById(b1id).addEventListener('click', options[1].cb);
+    return ansDlg;
+}
+   
+function closeAnsDialog(ansDlg)
+{
+    if (!ansDlg)
+        return;
+    ansDlg.remove();
+}
+
+function closeAnsDlgAndDisplayMsg(ansDlg, msg, time) {
+    var id = ansDlg.attr('id');
+    closeAnsDialog(ansDlg);
+    var html = "<tr id='"+id+"'><td><div class='msgItem'>"+msg+"</div></td></tr>";
+    $('#dlgContainer').append(html);
+    
+    setTimeout(function() {$('#'+id).remove();}, time?time:60000);
+}
+
+function dlgIdFromJid(jid) {
+    return 'msg_'+jid.replace(/[@\/\.]/g, '_');
+}
+
+function askForMediaDeviceUsage(cb) {
+  RTC.getMediaInputTypes(function(types) {
+    if (types.error) { //can happen if user denied access to camera under firefox
+        cb('error');
+        return;
+    }
+    var o = JinglePlugin;  
+//HAS_MIC and HAS_CAMERA are used only on Firefox to remember what media types we have. They are ignored on Chrome
+    var flags = (types.audio?JinglePlugin.HAS_MIC:0)|(types.video?JinglePlugin.HAS_CAM:0);
+    var oldFlags = localStorage.megaMediaInputFlags;
+    
+    var dialog = 
+      $("<table id='mediaDevUsageDlg' class='msgItem msgDlg'>\
+      <tr><td colspan=2>Please choose what media devices to use:</td></tr>\
+      <tr>\
+        <td><input type=checkbox id='micUsageChk'>Mic</input></td>\
+        <td><input type=checkbox id='camUsageChk'>Camera</input></td>\
+      </tr>\
+      <tr><td colspan=2><input type=button id='amdCloseBtn' value='Close'></td></tr></table>");
+    $('#dlgContainer').append(dialog);
+
+    var audioChk = document.getElementById('micUsageChk');
+    var videoChk = document.getElementById('camUsageChk');
+    if (types.audio) {
+        audioChk.checked = !(oldFlags & o.DISABLE_MIC);
+      } else {
+        audioChk.checked = false;
+        audioChk.disabled = true;
+      }
+    if (types.video) {
+        videoChk.checked = !(oldFlags & o.DISABLE_CAM);
+      } else {
+        videoChk.checked = false;
+        videoChk.disabled = true;
+      }
+    document.getElementById('amdCloseBtn').addEventListener('click', function() {
+        if (!videoChk.checked && types.video)
+            flags|=o.DISABLE_CAM;
+           
+        if (!audioChk.checked && types.audio)
+            flags|=o.DISABLE_MIC;
+          
+        localStorage.megaMediaInputFlags = flags;
+        dialog.remove();
+        cb();
+   });
+  });
+}
+   
+$(window).bind('beforeunload', function () {
+    if (connection && connection.connected) {
+        rtc.hangup();
+        connection.flush();
+        // ensure signout
+        $.ajax({
+            type: 'POST',
+            url: "http://j100.server.lu:5280/http-bind",
+            async: false,
+            cache: false,
+            contentType: 'application/xml',
+            data: "<body rid='" + connection.rid + "' xmlns='http://jabber.org/protocol/httpbind' sid='" + connection.sid + "' type='terminate'><presence xmlns='jabber:client' type='unavailable'/></body>",
+            success: function (data) {
+                console.log('signed out');
+                console.log(data);
+            },
+            error: function (XMLHttpRequest, textStatus, errorThrown) {
+                console.log('signout error', textStatus + ' (' + errorThrown + ')');
+            }
+        });
+    }
+});  
+</script>
+</body>
+</html>

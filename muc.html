@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Jingle/MUC-powered WebRTC VideoChat Sample</title>
+    <script src='//ajax.googleapis.com/ajax/libs/jquery/1.8.3/jquery.min.js'></script><!-- jquery -->
+    <script src='strophe.min.js'></script><!-- strophe, minified -->
+    <script src='strophe.disco.js'></script><!-- strophe, minified -->
+    <script src='strophe.jingle.js' charset='utf-8'></script><!-- strophe jingle connection plugin -->
+    <script src='strophe.jingle.session.js' charset='utf-8'></script><!-- strophe jingle connection plugin -->
+    <script src='strophe.jingle.sdp.js' charset='utf-8'></script><!-- sdp library -->
+    <script src='strophe.jingle.adapter.js' charset='utf-8'></script><!-- getusermedia cross browser compat layer -->
+    <script src='muc.js' charset='utf-8'></script><!-- sample application logic -->
+<!--    <script src='hark.bundle.js' charset='utf-8'></script> --> <!-- https://github.com/latentflip/hark --> 
+
+ <style type='text/css'>
+
+body {background-color:navy; font-family: arial; margin:0px; padding:0px}
+
+#minivideocontainer {width:160px;height:120px;}
+minivideo {width:160px;height:120px;}
+#ownvolume {width:0px;height:2px;background-color:#00ee00;}
+#status {color:white;background-color:navy;line-height:28px;font-size:14px;text-align:center;}
+#explain {width:160px;color:white;background-color:navy;font-weight:bold;font-size:14px;text-align:center}
+#explain a:link {color:white;}
+#explain a:visited {color:white;}
+#explain a img{width:160px;background-color:#cef4fd}
+#login {width:160px;}
+.textattrs {color:white;background-color:navy;font-family: Arial; font-weight:bold;line-height:28px;font-size:14px;}
+.rowtd {vertical-align:top; height:1%}
+.videotd{margin:0px; padding:0px}
+.vid{padding:0px}
+.remotevideo{height:100%;width:100%}
+.video_novideo{display:table; font-family: Arial; font-size: 24pt; color: red; text-align: center;}
+.video_novideo span{display:table-cell; vertical-align: middle;}
+.nick{font-family: Arial; color: lawngreen; text-align: center;}
+.nicktd{text-align:center}
+.rmtVideoConainer tr, .rmtVideoConainer td {margin: 0px; padding: 0px;}
+
+ </style>
+ </head>
+ <body>
+  <table width=100%>
+   <tr>
+    <td rowspan=3 class='rowtd' id='rmtVideoConainer' align=center style="height:600px; padding:0px; vertical-align:middle">
+	  <table>
+	   <tr>
+	    <td class='videotd' id=vidc1></td><td class='videotd' id=vidc2></td>
+	   </tr>
+	   <tr>
+	    <td class='videotd' id=vidc3 /><td class='videotd' id=vidc4 />
+	   </tr>
+	  </table>
+	</td>
+	<td width=1% class='rowtd'>
+	 <table>
+	  <tr><td>
+        <div id='minivideocontainer'><video id='minivideo' autoplay='autoplay' width=160px height=120px></video></div>
+      </td></tr>
+	  <tr><td><div id='ownvolume'></div></td></tr>
+	 </table>
+	</td>
+   </tr>
+   <tr>
+    <td class='rowtd'>
+     <div id='login' class='textattrs'>
+      <form id='credentials'>
+        <label for='jid'>JID:</label>
+        <input type='text' id='jid' value='alex@j100.server.lu'>
+        <label for='pass'>Password:</label>
+        <input type='password' id='pass' value='testpass'>
+        <input type='submit' id='connect' value='get camera and connect'>
+      </form>
+    </div>
+	</td>
+	</tr>
+	<tr>
+	<td class='rowtd'>
+	<label class='textattrs' style="text-align:center">Chat:</label>
+	<textarea readonly=true style="width: 150px; height:200px; font-size:8pt;font-family: Arial;" id='chat'> </textarea>
+	<label class='textattrs' style="text-align:center">Send Msg:</label>
+	<textarea style="width: 150px; height:30px" id='typemsg' onkeypress='return handleTypedChar(event);'> </textarea>
+	<label class='textattrs'>Log XMPP</label><input type=checkbox id = 'chkLogXmpp' onclick="RAWLOGGING=this.checked; console.warn(RAWLOGGING);" />
+	<label class='textattrs'>Video</label><input type=checkbox checked id='chkSendVideo' onclick="SEND_VIDEO=this.checked;" />
+	
+	</td>
+	</tr>
+	<tr>
+	 <td colspan=3 height=1%>
+     <div id='status' height=20px></div>
+	 </td>
+	</tr>
+  </table>
+  <script type='text/javascript' charset='utf-8'>
+
+var params = null;
+var typemsg = document.getElementById("typemsg");
+var chat = document.getElementById("chat");
+
+function handleTypedChar(event)
+{
+	if (event.keyCode != 13)
+		return;
+	if (!roomjid)
+		return;
+		
+    var msg = $msg({from: myroomjid, to: roomjid, type:'groupchat'}).c('body').t(typemsg.value);
+	connection.send(msg);
+	typemsg.value = '';
+	event.preventDefault();
+}
+
+$(document).ready(function() 
+{
+	params = parseParams(window.location.search);
+	console.log(params);
+	if (params.jid)
+	{
+		if (params.jid.indexOf('@') < 0)
+			params.jid += ('@'+DOMAIN);
+		document.getElementById('jid').value = params.jid;
+	}
+	if (params.vid)
+	{
+		var enabled = (params.vid !== '0');
+		document.getElementById('chkSendVideo').checked = enabled;
+		SEND_VIDEO = enabled;
+	}
+	if (params.logxml)
+	{
+		var enabled = (params.logxml !== '0');
+		document.getElementById('chkLogXmpp').checked = enabled;
+		RAWLOGGING = enabled;
+	}
+	setupGui({rmtVidContainerId: "rmtVideoConainer", onDisconnected: onDisconnected});
+	$('#credentials').submit(
+	  function () 
+	  {
+		var button = $('#connect').get(0);
+		if (button.value == 'connect' || button.value == 'get camera and connect') 
+		{
+			button.value = 'disconnect';
+            setStatus('please allow access to microphone and camera');
+//			connection.addHandler(connection.jingle.onJingle.bind(connection.jingle), 'urn:xmpp:jingle:1', 'iq', 'set', null, null);
+			getUserMediaWithConstraints(SEND_VIDEO?['audio', 'video']:['audio']);
+            $('#credentials>input[id!="connect"]').attr('disabled', 'disabled');
+        }
+		else 
+		{
+            connection.disconnect();
+			connection.reset();
+			onDisconnected(); //just in case, because if the callback is not called for some reason we may not be able to reconnect
+		}
+		chat.value = '';
+        return false;
+      }
+	);
+	if (params.jid && ((params.nostart === undefined) || (params.nostart === '0')))
+		document.getElementById('connect').click();
+});
+
+function onDisconnected()
+{
+	document.getElementById('connect').value = 'connect';
+	RTC.attachMediaStream($('#minivideo'), null);
+    $('#credentials>input[id!="connect"]').attr('disabled', null);
+}
+
+//called by onMediaReady() handler, which is called when getUserMediaWithConstraints() completes
+function doConnect()
+{
+    var u = $('#jid').get(0).value;
+    if (u.length == 0)
+        connection.connect(DOMAIN, null, onConnect);
+     else 
+	 {
+        if (u.indexOf('@') == -1)
+            u += '@' + DOMAIN;
+			
+        connection.connect(u, $('#pass').get(0).value, onConnect);
+    }
+}
+
+function parseParams(query)
+{
+	if (query.length < 1)
+		return {};
+	if (query[0] == '?')
+		query = query.substr(1);
+	var pairs = query.split('&');
+	var result = {};
+	pairs.forEach(function(pair)
+	{
+		var pos = pair.indexOf('=');
+		if (pos < 0)
+		throw new Error("Parameter pair '"+pair+"' missing '=' sign");
+		result[pair.substr(0, pos).toLowerCase()] = pair.substr(pos+1);
+	});
+	return result;
+}
+
+</script>
+</body>
+</html>
